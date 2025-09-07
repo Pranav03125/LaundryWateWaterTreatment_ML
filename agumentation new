@@ -1,0 +1,104 @@
+import pandas as pd
+import numpy as np
+from google.colab import files
+
+file_path = '/content/COMPLETE DATA (1) (1).xlsx'
+
+# --- Load Sheets ---
+chito_rapid_rate = pd.read_excel(file_path, sheet_name='Chito-rapid rate')
+poly_dose = pd.read_excel(file_path, sheet_name='poly-DOSE', header=2)
+consoli = pd.read_excel(file_path, sheet_name='CONSOLI')
+
+# --- Clean column headers ---
+def clean(df):
+    df.columns = df.columns.str.strip()
+    return df
+
+chito_rapid_rate = clean(chito_rapid_rate)
+poly_dose = clean(poly_dose)
+consoli = clean(consoli)
+
+# --- Extract Chitosan features ---
+chito_features = pd.DataFrame({
+    'Rapid mixing rate (rpm)': chito_rapid_rate['Rapid mixing rate (rpm)'],
+    'Colour removal (%) Chito Rapid': chito_rapid_rate['Colour removal (%)'],
+    'Turbidity removal (%) Chito Rapid': chito_rapid_rate['Turbidity removal (%)']
+})
+
+# --- Extract Polyamine features ---
+poly_features = pd.DataFrame({
+    'Coagulant vol. (mL)': poly_dose['Coagulant vol.'],
+    'Colour removal (%) Poly Dose': poly_dose['Colour removal (%)'],
+    'Turbidity removal (%) Poly Dose': poly_dose['Turbidity removal (%)']
+})
+
+# --- Combine Chito + Poly features ---
+combined_features = pd.concat(
+    [chito_features.reset_index(drop=True), poly_features.reset_index(drop=True)], 
+    axis=1
+)
+
+# --- Inputs + Targets ---
+input_cols = ['Rapid mixing rate (rpm)', 'Coagulant vol. (mL)']
+target_cols = [
+    'Colour removal (%) Chito Rapid', 'Turbidity removal (%) Chito Rapid',
+    'Colour removal (%) Poly Dose', 'Turbidity removal (%) Poly Dose'
+]
+
+# --- Prepare DataFrame ---
+def prepare(df, inputs, targets):
+    for c in inputs + targets:
+        df[c] = pd.to_numeric(df[c], errors='coerce')
+    return df.dropna(subset=inputs + targets).reset_index(drop=True)
+
+combined_features = prepare(combined_features, input_cols, target_cols)
+
+# --- Augmentation with controlled noise ---
+def augment(df, in_cols, out_cols, n_aug=50, variation=0.05):
+    augmented = []
+    for _, row in df.iterrows():
+        for _ in range(n_aug):
+            new_row = row.copy()
+            for c in in_cols:
+                noise = np.random.uniform(-variation, variation)
+                new_row[c] = max(row[c] * (1 + noise), 0)
+            augmented.append(new_row)
+    return pd.DataFrame(augmented)[in_cols + out_cols].reset_index(drop=True)
+
+augmented_data = augment(combined_features, input_cols, target_cols)
+
+# --- Parse CONSOLI sheet properly ---
+# Rename columns for clarity
+consoli.columns = [
+    "Stage", "Colour_Chitosan", "Colour_Polyamine", 
+    "Turbidity_Chitosan", "Turbidity_Polyamine",
+    "Unused1", "Unused2", "Unused3", "Unused4", "Unused5", "Unused6", "Unused7"
+]
+
+# Keep only relevant columns
+consoli_clean = consoli[["Stage", "Colour_Chitosan", "Colour_Polyamine", 
+                         "Turbidity_Chitosan", "Turbidity_Polyamine"]]
+
+# Drop rows that are fully empty
+consoli_clean = consoli_clean.dropna(how="all").reset_index(drop=True)
+
+# Keep only treatment stages of interest
+stages_of_interest = ["RAW", "COAGULATION", "SAND FILTRATION", "ADSORPTION", "ULTRA FILTRATION"]
+consoli_filtered = consoli_clean[consoli_clean["Stage"].isin(stages_of_interest)].reset_index(drop=True)
+
+# --- Expand CONSOLI so it matches augmented dataset length ---
+consoli_expanded = pd.concat([consoli_filtered]*len(augmented_data), ignore_index=True)
+
+# --- Final Combined Dataset ---
+final_dataset = pd.concat([augmented_data.reset_index(drop=True), consoli_expanded.reset_index(drop=True)], axis=1)
+
+# --- Save to Excel ---
+output_file = "augmented_full_dataset.xlsx"
+final_dataset.to_excel(output_file, index=False)
+
+# --- Auto download ---
+files.download(output_file)
+
+print("✅ Augmentation complete. Final dataset shape:", final_dataset.shape)
+print("Sample:")
+print(final_dataset.head())
